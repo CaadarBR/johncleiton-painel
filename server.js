@@ -83,7 +83,8 @@ function renderAdmin(msg) {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h1 style="font-size:24px">Painel</h1><a href="/logout" style="font-size:13px">sair</a></div>
     <div class="tag" style="margin-bottom:14px">Gerencie o catálogo · <a href="https://indico.johncleiton.com" target="_blank">ver no ar →</a></div>
     ${msg ? '<div class="card" style="border-color:#2f6e3a;color:#b6f0c0">' + msg + '</div>' : ''}
-    <div class="card"><div class="pnome" style="margin-bottom:8px">➕ Adicionar produto</div>
+    <a href="/favoritos" class="cta" style="margin-bottom:16px">📥 Puxar meus favoritos do Mercado Livre</a>
+    <div class="card"><div class="pnome" style="margin-bottom:8px">➕ Adicionar produto manual</div>
     <form method="post" action="/api/add">
       <label>Emoji</label><input name="emoji" placeholder="📷" value="🛒">
       <label>Nome</label><input name="nome" required placeholder="Nome do produto">
@@ -122,6 +123,49 @@ app.post('/api/del', (req, res) => {
 app.get('/', (req, res) => {
   if (req.isAdminHost) return res.send(req.authed ? renderAdmin() : renderLogin(false));
   res.send(renderCatalogo());
+});
+// ---------- PUXAR FAVORITOS DO MERCADO LIVRE ----------
+async function fetchFavoritos() {
+  const cookie = process.env.ML_COOKIE || '';
+  if (!cookie) return { error: 'Cookie do ML não configurado.' };
+  try {
+    const r = await fetch('https://myaccount.mercadolivre.com.br/bookmarks/list', {
+      headers: { 'Cookie': cookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml' }
+    });
+    const html = (await r.text()).replace(/\\u002F/g, '/');
+    const prods = [], seen = new Set();
+    const re = /www\.mercadolivre\.com\.br\/([a-z0-9\-]{6,90})\/(?:up|p)\/(ML[BU]\d+)/g;
+    let m;
+    while ((m = re.exec(html))) {
+      const slug = m[1], id = m[2];
+      if (seen.has(id) || /^(ofertas|mais-vendidos|c|categoria)$/.test(slug)) continue;
+      seen.add(id);
+      const nome = slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      prods.push({ id, nome, url: 'https://www.mercadolivre.com.br/' + slug + '/p/' + id });
+    }
+    return { prods, status: r.status };
+  } catch (e) { return { error: String(e).slice(0, 120) }; }
+}
+app.get('/favoritos', async (req, res) => {
+  if (!req.authed) return res.redirect('/');
+  const r = await fetchFavoritos();
+  let body;
+  if (r.error) body = `<div class="card" style="border-color:#5a3444;color:#ffb3b3">⚠️ ${esc(r.error)}<br><br>O cookie do ML pode ter expirado — me manda um novo que eu atualizo.</div>`;
+  else if (!r.prods || !r.prods.length) body = `<div class="card">Nenhum favorito encontrado (a página pode carregar por rolagem, ou cookie expirou).</div>`;
+  else body = r.prods.map(p => `<div class="card">
+      <div class="pnome">🛒 ${esc(p.nome)}</div>
+      <div style="margin:6px 0 10px"><a href="${esc(p.url)}" target="_blank" style="font-size:12px">ver no ML →</a></div>
+      <form method="post" action="/api/add">
+        <input type="hidden" name="emoji" value="🛒"><input type="hidden" name="nome" value="${esc(p.nome)}">
+        <label>Preço R$</label><input name="preco" required placeholder="0,00">
+        <label>Link de afiliado (gera no app ML e cola aqui)</label><input name="link" required placeholder="https://meli.la/...">
+        <label>Código ML (opcional)</label><input name="codigo" placeholder="XXXX-XXXX">
+        <button class="btn" style="margin-top:8px">➕ Adicionar ao catálogo</button>
+      </form></div>`).join('');
+  res.send(`<!doctype html><html lang="pt-BR"><title>Favoritos ML</title>${HEAD}<body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h1 style="font-size:22px">📥 Teus favoritos do ML</h1><a href="/" style="font-size:13px">← painel</a></div>
+    <div class="tag" style="margin-bottom:14px">${r.prods ? r.prods.length + ' produtos' : ''} · cola o link de afiliado de cada um e adiciona</div>
+    ${body}</div></body></html>`);
 });
 app.get('/produtos.json', (req, res) => res.json(load()));
 app.get('/health', (req, res) => res.send('ok'));
